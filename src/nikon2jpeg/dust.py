@@ -10,6 +10,9 @@ DETECT_WIDTH = 2000  # detection runs at about this width
 MAX_SPOT_FRAC = 0.004  # spot diameter limit, as a fraction of image width (NFR-4)
 MAX_CONTRAST = 70  # darker than this is a real object, not dust
 MAX_RING_STD = 14.0  # surroundings must be flat (sky, walls), not textured
+NOISE_K = 3.0  # spot must stand out by this many local noise/texture deviations
+MIN_BACKGROUND = 40  # dust is invisible in near-black areas; they are only noisy
+MAX_COVERAGE = 0.005  # real dust is sparse; more masked area means we are picking up noise
 
 
 def _odd(n: int) -> int:
@@ -23,13 +26,16 @@ def detect(rgb: np.ndarray, sensitivity: str = "medium") -> np.ndarray:
     small = rgb
     if scale != 1:
         small = cv2.resize(rgb, (w // scale, h // scale), interpolation=cv2.INTER_AREA)
-    gray = cv2.cvtColor(small, cv2.COLOR_RGB2GRAY)
+    gray = cv2.GaussianBlur(cv2.cvtColor(small, cv2.COLOR_RGB2GRAY), (0, 0), 0.8)
     sw = gray.shape[1]
 
     max_d = max(3, int(sw * MAX_SPOT_FRAC))
     background = cv2.medianBlur(gray, _odd(max(15, 3 * max_d)))
     residual = background.astype(np.int16) - gray.astype(np.int16)
-    candidates = (residual >= THRESHOLD[sensitivity]).astype(np.uint8)
+    # Local deviation of the residual: high in noisy or textured regions, low on clean flat ones.
+    local_sigma = cv2.blur(np.abs(residual).astype(np.float32), (_odd(4 * max_d),) * 2)
+    threshold = THRESHOLD[sensitivity] + NOISE_K * local_sigma
+    candidates = ((residual >= threshold) & (background >= MIN_BACKGROUND)).astype(np.uint8)
 
     n, labels, stats, _ = cv2.connectedComponentsWithStats(candidates, connectivity=8)
     mask = np.zeros_like(gray)
@@ -50,6 +56,8 @@ def detect(rgb: np.ndarray, sensitivity: str = "medium") -> np.ndarray:
             continue
         mask[y : y + bh, x : x + bw][blob] = 255
 
+    if (mask > 0).mean() > MAX_COVERAGE:
+        mask[:] = 0  # detector is fooled by noise; touching nothing is safer than smearing
     mask = cv2.dilate(mask, np.ones((3, 3), np.uint8), iterations=2)
     if scale != 1:
         mask = cv2.resize(mask, (w, h), interpolation=cv2.INTER_NEAREST)

@@ -218,3 +218,8 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Local RAW test fixtures (large)
+tests/data/*.NEF
+tests/data/*.nef
+tests/data_jpeg/
