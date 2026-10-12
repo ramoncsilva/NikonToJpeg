@@ -46,12 +46,9 @@ Each image is checked for small, round, dark spots on clean areas. With three or
 
 ```powershell
 .venv\Scripts\pip install -e ".[dev]"
-$env:PATH = "$PWD\.venv\Scripts;$env:PATH"; packaginguild.ps1   # -> dist
-ikon2jpeg
-ikon2jpeg.exe
-dist
-ikon2jpeg
-ikon2jpeg.exe install                          # menu now points at the exe
+$env:PATH = "$PWD\.venv\Scripts;$env:PATH"
+packaging\build.ps1                      # -> dist\nikon2jpeg\nikon2jpeg.exe
+dist\nikon2jpeg\nikon2jpeg.exe install   # menu now points at the exe
 ```
 
 Run `install` again if you move the folder.
