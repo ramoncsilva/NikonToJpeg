@@ -33,6 +33,29 @@ On Windows 11 the entries appear under **Show more options** (Shift+F10).
 .venv\Scripts\python -m ruff check src tests
 ```
 
+## Windows right-click menu
+
+`nikon2jpeg install` adds the entries (per user, no admin). Selecting several files in Explorer opens a single window for the whole batch.
+Windows 11 hides classic entries behind **Show more options**; `nikon2jpeg classic-menu on` (undo with `off`) makes Explorer show the classic menu directly. Restart Explorer afterwards.
+
+## Dust removal
+
+Each image is checked for small, round, dark spots on clean areas. With three or more files, spots that recur at the same position across the shoot (sensor dust) are also learned from the embedded previews and repaired in every frame. Disable with `--dust-map off`, or all dust handling with `--dust off`. `--save-dust-mask` writes the mask next to each JPEG.
+
+## Standalone .exe
+
+```powershell
+.venv\Scripts\pip install -e ".[dev]"
+$env:PATH = "$PWD\.venv\Scripts;$env:PATH"; packaginguild.ps1   # -> dist
+ikon2jpeg
+ikon2jpeg.exe
+dist
+ikon2jpeg
+ikon2jpeg.exe install                          # menu now points at the exe
+```
+
+Run `install` again if you move the folder.
+
 ## Status
 
-Spec milestones M1–M5 are implemented; M6 is partly done (install/uninstall work, but selecting several files still opens one window per file). M7 (PyInstaller packaging) is pending. No real NEF fixtures are checked in yet, so the RAW decode path has only been exercised through unit tests of the imaging stages.
+Spec milestones M1-M7 are implemented; CI builds the exe on Windows. Not done: a native top-level Windows 11 menu entry (needs a signed MSIX + COM DLL), and dust/noise thresholds are tuned on one sample photo.

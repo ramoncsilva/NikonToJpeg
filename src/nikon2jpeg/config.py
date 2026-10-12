@@ -24,6 +24,7 @@ class Settings:
     denoise: str = "medium"
     dust: bool = True
     dust_sensitivity: str = "medium"
+    dust_map: bool = True  # learn recurring sensor-dust spots across the batch
     recursive: bool = False
     overwrite: bool = False
     keep_gps: bool = False

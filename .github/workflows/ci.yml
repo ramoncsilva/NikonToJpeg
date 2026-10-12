@@ -1,0 +1,21 @@
+name: CI
+on: [push, pull_request]
+
+jobs:
+  test-and-build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e ".[dev]"
+      - run: ruff check src tests
+      - run: pytest
+      - run: powershell -File packaging/build.ps1
+      - run: dist\nikon2jpeg\nikon2jpeg.exe version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nikon2jpeg-windows
+          path: dist/nikon2jpeg

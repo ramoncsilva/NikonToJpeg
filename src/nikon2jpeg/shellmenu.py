@@ -30,7 +30,7 @@ def install() -> None:
             winreg.SetValueEx(k, "MUIVerb", 0, winreg.REG_SZ, label)
             winreg.SetValueEx(k, "Icon", 0, winreg.REG_SZ, sys.executable)
         with winreg.CreateKey(winreg.HKEY_CURRENT_USER, rf"{ROOT}\{key}\command") as k:
-            winreg.SetValue(k, "", winreg.REG_SZ, f'{_launcher()} convert --pause "{arg}"')
+            winreg.SetValue(k, "", winreg.REG_SZ, f'{_launcher()} convert --collect --pause "{arg}"')
 
 
 def uninstall() -> None:
@@ -40,3 +40,21 @@ def uninstall() -> None:
                 winreg.DeleteKey(winreg.HKEY_CURRENT_USER, sub)
             except FileNotFoundError:
                 pass
+
+
+# Windows 11 shows classic verbs only under "Show more options". Putting an empty InprocServer32
+# under this CLSID makes Explorer use the classic menu everywhere (a per-user, reversible tweak).
+_CLASSIC_KEY = r"Software\Classes\CLSID\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\InprocServer32"
+
+
+def set_classic_menu(enabled: bool) -> None:
+    if enabled:
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, _CLASSIC_KEY) as k:
+            winreg.SetValue(k, "", winreg.REG_SZ, "")
+        return
+    parent = _CLASSIC_KEY.rsplit("\\", 1)[0]
+    for sub in (_CLASSIC_KEY, parent):
+        try:
+            winreg.DeleteKey(winreg.HKEY_CURRENT_USER, sub)
+        except FileNotFoundError:
+            pass

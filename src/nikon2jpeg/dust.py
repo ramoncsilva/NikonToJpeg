@@ -19,8 +19,8 @@ def _odd(n: int) -> int:
     return n if n % 2 else n + 1
 
 
-def detect(rgb: np.ndarray, sensitivity: str = "medium") -> np.ndarray:
-    """Return a full-resolution uint8 mask (255 = dust) for the image."""
+def detect_small(rgb: np.ndarray, sensitivity: str = "medium") -> np.ndarray:
+    """Return a uint8 mask (255 = dust) on the detection grid (about DETECT_WIDTH wide)."""
     h, w = rgb.shape[:2]
     scale = max(1, round(w / DETECT_WIDTH))
     small = rgb
@@ -58,16 +58,38 @@ def detect(rgb: np.ndarray, sensitivity: str = "medium") -> np.ndarray:
 
     if (mask > 0).mean() > MAX_COVERAGE:
         mask[:] = 0  # detector is fooled by noise; touching nothing is safer than smearing
-    mask = cv2.dilate(mask, np.ones((3, 3), np.uint8), iterations=2)
-    if scale != 1:
+    return mask
+
+
+def expand(small_mask: np.ndarray, shape: tuple[int, int]) -> np.ndarray:
+    """Grow a detection-grid mask a little and scale it to full resolution (h, w)."""
+    h, w = shape
+    mask = cv2.dilate(small_mask, np.ones((3, 3), np.uint8), iterations=2)
+    if mask.shape != (h, w):
+        scale = max(1, round(w / mask.shape[1]))
         mask = cv2.resize(mask, (w, h), interpolation=cv2.INTER_NEAREST)
         mask = cv2.dilate(mask, np.ones((scale, scale), np.uint8))
     return mask
 
 
-def remove_dust(rgb: np.ndarray, sensitivity: str = "medium") -> tuple[np.ndarray, np.ndarray]:
+def detect(
+    rgb: np.ndarray, sensitivity: str = "medium", shoot_map: np.ndarray | None = None
+) -> np.ndarray:
+    """Full-resolution dust mask; optionally merged with a recurring-spot map for the shoot."""
+    small = detect_small(rgb, sensitivity)
+    if shoot_map is not None:
+        extra = shoot_map
+        if extra.shape != small.shape:
+            extra = cv2.resize(extra, small.shape[::-1], interpolation=cv2.INTER_NEAREST)
+        small = cv2.bitwise_or(small, extra)
+    return expand(small, rgb.shape[:2])
+
+
+def remove_dust(
+    rgb: np.ndarray, sensitivity: str = "medium", shoot_map: np.ndarray | None = None
+) -> tuple[np.ndarray, np.ndarray]:
     """Return (cleaned image, mask)."""
-    mask = detect(rgb, sensitivity)
+    mask = detect(rgb, sensitivity, shoot_map)
     if not mask.any():
         return rgb, mask
     return cv2.inpaint(rgb, mask, 3, cv2.INPAINT_TELEA), mask

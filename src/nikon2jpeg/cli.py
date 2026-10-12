@@ -7,7 +7,18 @@ import sys
 import time
 from pathlib import Path
 
-from nikon2jpeg import __version__, pipeline
+from rich.console import Console
+from rich.progress import (
+    BarColumn,
+    MofNCompleteColumn,
+    Progress,
+    SpinnerColumn,
+    TextColumn,
+    TimeElapsedColumn,
+)
+from rich.table import Table
+
+from nikon2jpeg import __version__, collect, pipeline
 from nikon2jpeg.config import (
     DENOISE_LEVELS,
     PRESET_MAX_EDGE,
@@ -17,6 +28,8 @@ from nikon2jpeg.config import (
     load_config_defaults,
 )
 from nikon2jpeg.discover import DiscoverError, plan
+
+STATUS_STYLE = {"converted": "green", "skipped": "yellow", "failed": "red"}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -31,6 +44,11 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--denoise", choices=DENOISE_LEVELS)
     c.add_argument("--dust", choices=["on", "off"])
     c.add_argument("--dust-sensitivity", choices=SENSITIVITIES)
+    c.add_argument(
+        "--dust-map",
+        choices=["auto", "off"],
+        help="auto: learn dust spots that recur across the batch (needs 3+ files)",
+    )
     c.add_argument("--recursive", action="store_true", default=None)
     c.add_argument("--overwrite", action="store_true", default=None)
     c.add_argument("--keep-gps", action="store_true", default=None)
@@ -39,9 +57,16 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--dry-run", action="store_true")
     c.add_argument("--save-dust-mask", action="store_true", default=None)
     c.add_argument("--pause", action="store_true", help="wait before closing (context menu)")
+    c.add_argument(
+        "--collect", action="store_true", help="merge simultaneous launches into one batch"
+    )
 
     sub.add_parser("install", help="add Explorer right-click entries")
     sub.add_parser("uninstall", help="remove Explorer right-click entries")
+    cm = sub.add_parser(
+        "classic-menu", help="Windows 11: show classic right-click menu directly (opt-in)"
+    )
+    cm.add_argument("state", choices=["on", "off"])
     sub.add_parser("version")
     return p
 
@@ -54,6 +79,7 @@ def _settings(args: argparse.Namespace) -> Settings:
         "denoise": args.denoise,
         "dust": None if args.dust is None else args.dust == "on",
         "dust_sensitivity": args.dust_sensitivity,
+        "dust_map": None if args.dust_map is None else args.dust_map == "auto",
         "recursive": args.recursive,
         "overwrite": args.overwrite,
         "keep_gps": args.keep_gps,
@@ -65,41 +91,77 @@ def _settings(args: argparse.Namespace) -> Settings:
     return apply_overrides(base, overrides)
 
 
+def _summary(console: Console, results: list[pipeline.Result], elapsed: float) -> None:
+    table = Table(title=f"Done in {elapsed:.1f}s", show_header=False)
+    for status in ("converted", "skipped", "failed"):
+        n = sum(r.status == status for r in results)
+        table.add_row(f"[{STATUS_STYLE[status]}]{status}[/]", str(n))
+    console.print(table)
+
+
 def _convert(args: argparse.Namespace) -> int:
+    console = Console()
+    if args.collect:
+        gathered = collect.collect([str(p) for p in args.paths])
+        if gathered is None:
+            return 0  # another window is handling this batch
+        args.paths = [Path(p) for p in gathered]
+
     settings = _settings(args)
     try:
         jobs = plan(args.paths, settings.recursive)
     except DiscoverError as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        console.print(f"[red]error:[/] {exc}")
+        _wait(args, failed=True)
         return 2
     if not jobs:
-        print("No .nef files found.")
+        console.print("No .nef files found.")
+        _wait(args, failed=False)
         return 0
 
     if args.dry_run:
         for j in jobs:
-            print(f"{j.src} -> {j.dst}")
-        print(f"{len(jobs)} file(s) would be processed.")
+            console.print(f"{j.src} -> {j.dst}", highlight=False)
+        console.print(f"{len(jobs)} file(s) would be processed.")
         return 0
 
-    total = len(jobs)
-    done = 0
-
-    def on_result(r: pipeline.Result) -> None:
-        nonlocal done
-        done += 1
-        extra = f" ({r.detail})" if r.detail else ""
-        print(f"[{done}/{total}] {r.status:9} {r.job.src.name}{extra}", flush=True)
-
-    results, elapsed = pipeline.run(jobs, settings, on_result)
-    counts = {s: sum(r.status == s for r in results) for s in ("converted", "skipped", "failed")}
-    print(
-        f"\nDone in {elapsed:.1f}s: {counts['converted']} converted, "
-        f"{counts['skipped']} skipped, {counts['failed']} failed."
+    columns = (
+        SpinnerColumn(),
+        TextColumn("{task.description}"),
+        BarColumn(),
+        MofNCompleteColumn(),
+        TimeElapsedColumn(),
     )
-    if args.pause:
+    with Progress(*columns, console=console) as progress:
+        task = progress.add_task("Converting", total=len(jobs))
+
+        def on_result(r: pipeline.Result) -> None:
+            style = STATUS_STYLE[r.status]
+            extra = f" ({r.detail})" if r.detail else ""
+            progress.console.print(
+                f"[{style}]{r.status:9}[/] {r.job.src.name}{extra}", highlight=False
+            )
+            progress.advance(task)
+
+        results, elapsed = pipeline.run(jobs, settings, on_result, progress.console.print)
+
+    _summary(console, results, elapsed)
+    failed = any(r.status == "failed" for r in results)
+    _wait(args, failed)
+    return 1 if failed else 0
+
+
+def _wait(args: argparse.Namespace, failed: bool) -> None:
+    """Keep the console open when launched from Explorer."""
+    if not args.pause:
+        return
+    if failed:
+        try:
+            input("Press Enter to close...")
+        except EOFError:
+            time.sleep(3)
+    else:
         time.sleep(3)
-    return 1 if counts["failed"] else 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -114,7 +176,17 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "install":
         shellmenu.install()
         print("Context menu installed.")
-    else:
+    elif args.cmd == "uninstall":
         shellmenu.uninstall()
         print("Context menu removed.")
+    else:
+        shellmenu.set_classic_menu(args.state == "on")
+        print(
+            f"Classic context menu {args.state}. "
+            "Restart Explorer (or sign out) for it to take effect."
+        )
     return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

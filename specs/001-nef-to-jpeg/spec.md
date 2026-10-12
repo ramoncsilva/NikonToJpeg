@@ -2,7 +2,7 @@
 
 | Field   | Value                                   |
 |---------|-----------------------------------------|
-| Status  | Draft (v2 — stack changed from Go to Python) |
+| Status  | Implemented (v0.1) — v2 stack: Python |
 | Owner   | ramoncsilva                             |
 | Created | 2026-10-11                              |
 | Stack   | Python ≥ 3.11, Windows 11 first-class   |
@@ -45,6 +45,8 @@ The tool is reachable from the **Windows Explorer right-click menu**, both for a
 | FR-11 | **Failure isolation:** a corrupt/unsupported NEF is logged and skipped; the batch continues. Partial output files are never left behind (write to temp file + `os.replace`). |
 | FR-12 | **Context menu install/uninstall** via `nikon2jpeg install` / `nikon2jpeg uninstall` (no admin rights; per-user registry through `winreg`). See §6. |
 | FR-13 | `--dry-run` lists what would be converted without writing. |
+| FR-15 | **Shoot dust map:** with 3+ files and dust removal on, learn spots that recur at the same position (same orientation) in ≥ 40 % of the frames, using the embedded previews, and repair them in every frame. `--dust-map auto|off` (default auto). |
+| FR-16 | **Batch collection:** context-menu launches use `--collect`; simultaneous launches hand their paths to the first one (loopback socket), so a multi-selection shows one window. |
 | FR-14 | Optional `config.toml` (`%APPDATA%\NikonToJpeg\config.toml`, read with `tomllib`) supplies default flags; CLI flags win. Context-menu invocations use the config. |
 
 ## 4. Non-functional requirements
@@ -66,7 +68,7 @@ The tool is reachable from the **Windows Explorer right-click menu**, both for a
 
 | Concern | Library | Why |
 |---------|---------|-----|
-| NEF decode | **`rawpy`** (LibRaw binding, binary wheels for Windows) | True RAW: demosaic, white balance, 16-bit sRGB output. No native build needed. |
+| NEF decode | **`rawpy`** (LibRaw binding, binary wheels for Windows) | True RAW: demosaic, white balance, 8-bit sRGB output (8-bit because OpenCV's non-local-means denoiser only accepts 8-bit). No native build needed. |
 | Array ops | `numpy` | Pipeline buffers. |
 | Denoise, dust, resize | **`opencv-python-headless`** | `fastNlMeansDenoisingColored`, `medianBlur`, `connectedComponentsWithStats`, `inpaint` (Telea), `resize` (INTER_AREA / LANCZOS4). |
 | JPEG encode + ICC | **`Pillow`** | `quality`, `progressive`, `subsampling`, `icc_profile`, `optimize`. |
@@ -80,14 +82,14 @@ The tool is reachable from the **Windows Explorer right-click menu**, both for a
 
 ### 5.2 Decoding strategy
 
-- **Default:** `rawpy.imread(path).postprocess(use_camera_wb=True, output_bps=16, output_color=rawpy.ColorSpace.sRGB, no_auto_bright=False, half_size=<True if target long edge ≤ half of sensor long edge>)`. `half_size` skips demosaicing interpolation — big speed-up when we downscale to 2048 anyway, and slightly reduces noise.
+- **Default:** `rawpy.imread(path).postprocess(use_camera_wb=True, output_bps=8, output_color=rawpy.ColorSpace.sRGB, no_auto_bright=False, half_size=<True if target long edge ≤ half of sensor long edge>)`. `half_size` skips demosaicing interpolation — big speed-up when we downscale to 2048 anyway, and slightly reduces noise.
 - **`--fast`:** use embedded JPEG preview via `extract_thumb()` (no dust/denoise gain, but near-instant). Auto-fallback to this if full decode raises.
 - Orientation: `postprocess` applies `user_flip` from RAW metadata by default; verify in tests (AC-11).
 
 ### 5.3 Processing pipeline
 
 ```
-discover → decode(rawpy, 16-bit) → dust removal → denoise → resize → light sharpen → 8-bit sRGB → encode JPEG (+EXIF/ICC) → atomic write
+discover → decode(rawpy, 8-bit) → dust removal → denoise → resize → light sharpen → 8-bit sRGB → encode JPEG (+EXIF/ICC) → atomic write
 ```
 
 - **Order rationale:** dust and denoise run at the highest available resolution, where spots and noise are most separable from detail; resize (INTER_AREA) averages residual noise; a light unsharp mask restores crispness lost to denoise/resize.
@@ -150,8 +152,8 @@ Per-user registry entries under `HKCU\Software\Classes` (no admin), written with
 `<exe>` is the PyInstaller `nikon2jpeg.exe` when frozen (`sys.frozen`), otherwise `pythonw`/`python -m nikon2jpeg` resolved to an absolute path.
 
 Notes:
-- Multi-select on files: Windows launches one process per file. The exe uses a **named mutex + local socket** so the first instance becomes the leader, collects paths for ~500 ms from followers, then processes them as one batch (one window).
-- **Windows 11** shows classic verbs under **"Show more options"** (Shift+F10). A native top-level entry needs an `IExplorerCommand` handler + sparse MSIX package — **out of scope for v1** (stretch).
+- Multi-select on files: Windows launches one process per file. With `--collect`, the first instance binds a loopback socket and becomes the leader; the others send their paths to it and exit. The leader waits 0.8 s after the last arrival, then processes everything as one batch (one window). Explorer itself hides classic verbs when more than ~15 files are selected; use the folder entry for bigger sets.
+- **Windows 11** shows classic verbs under **"Show more options"** (Shift+F10). A native top-level entry needs an `IExplorerCommand` handler + sparse MSIX package — **not implemented**: it needs a native COM DLL and a signed MSIX package. Instead, `nikon2jpeg classic-menu on|off` is an opt-in per-user tweak that makes Explorer show the classic menu directly (restart Explorer afterwards).
 - Menu launches a console window with the progress bar; on completion it shows the summary and pauses 3 s unless `--no-pause`.
 - `uninstall` removes exactly the keys it created; `install` is idempotent and records the exe path (re-run after moving it).
 

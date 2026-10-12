@@ -15,6 +15,7 @@ from PIL import Image, ImageOps
 class Decoded:
     rgb: np.ndarray  # HxWx3 uint8, sRGB, already upright
     exif: bytes | None  # raw EXIF segment from the embedded preview, if any
+    flip: int = 0  # LibRaw orientation code; same code = same sensor-to-image mapping
 
 
 def _thumb(raw: rawpy.RawPy):
@@ -38,12 +39,19 @@ def _preview_rgb(thumb) -> np.ndarray:
     return np.asarray(thumb.data)
 
 
+def preview(path: Path) -> tuple[np.ndarray, int] | None:
+    """Upright embedded preview and orientation code (cheap; used to learn the dust map)."""
+    with rawpy.imread(str(path)) as raw:
+        thumb = _thumb(raw)
+        return None if thumb is None else (_preview_rgb(thumb), raw.sizes.flip)
+
+
 def decode(path: Path, target_edge: int | None, fast: bool = False) -> Decoded:
     with rawpy.imread(str(path)) as raw:
         thumb = _thumb(raw)
         exif = _exif_from_thumb(thumb)
         if fast and thumb is not None:
-            return Decoded(_preview_rgb(thumb), exif)
+            return Decoded(_preview_rgb(thumb), exif, raw.sizes.flip)
         try:
             long_edge = max(raw.sizes.iwidth, raw.sizes.iheight)
             # Skipping demosaic interpolation is a big win when we downscale anyway.
@@ -57,5 +65,5 @@ def decode(path: Path, target_edge: int | None, fast: bool = False) -> Decoded:
         except Exception:
             if thumb is None:
                 raise
-            return Decoded(_preview_rgb(thumb), exif)  # fall back to the preview
-        return Decoded(rgb, exif)
+            return Decoded(_preview_rgb(thumb), exif, raw.sizes.flip)  # fall back to the preview
+        return Decoded(rgb, exif, raw.sizes.flip)
